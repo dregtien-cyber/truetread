@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Field Swath Guidance</title>
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body, html { width: 100%; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+
+    #map { width: 100%; height: 100vh; z-index: 1; }
+
+    /* Top HUD Lightbar */
+    #hud {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 90%;
+      max-width: 450px;
+      padding: 12px 16px;
+      background: rgba(20, 20, 20, 0.9);
+      color: #fff;
+      border-radius: 12px;
+      z-index: 1000;
+      text-align: center;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      transition: background-color 0.2s ease;
+    }
+    #hud.on-track { background: rgba(16, 124, 65, 0.95); }
+    #hud.off-track { background: rgba(209, 52, 52, 0.95); }
+    
+    #hud-status { font-size: 1.3rem; font-weight: bold; margin-bottom: 4px; }
+    #hud-sub { font-size: 0.85rem; opacity: 0.8; }
+
+    /* Bottom Control Panel */
+    #controls {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 90%;
+      max-width: 450px;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 14px;
+      border-radius: 14px;
+      z-index: 1000;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .btn-group { display: flex; gap: 8px; }
+    button {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      background: #007bff;
+      color: white;
+      font-weight: bold;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    button:active { opacity: 0.8; }
+    button.btn-danger { background: #dc3545; }
+    button.btn-success { background: #28a745; }
+    button.btn-secondary { background: #6c757d; }
+
+    .setting-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; font-weight: bold; color: #333; }
+    input[type="range"] { flex: 1; margin-left: 10px; }
+  </style>
+</head>
+<body>
+
+  <!-- Visual HUD Lightbar -->
+  <div id="hud">
+    <div id="hud-status">STANDBY</div>
+    <div id="hud-sub">Set Point A & B to define A-B Swath Line</div>
+  </div>
+
+  <!-- Map Container -->
+  <div id="map"></div>
+
+  <!-- Floating Controls -->
+  <div id="controls">
+    <div class="setting-row">
+      <span>Tolerance: <span id="tol-val">1.5</span>m</span>
+      <input type="range" id="tolerance" min="0.5" max="10" step="0.5" value="1.5" />
+    </div>
+    
+    <div class="btn-group">
+      <button id="btn-a" onclick="setPoint('A')">Set Point A</button>
+      <button id="btn-b" onclick="setPoint('B')">Set Point B</button>
+      <button class="btn-secondary" onclick="clearLine()">Clear Line</button>
+    </div>
+
+    <button id="btn-toggle" class="btn-success" onclick="toggleGuidance()">Start Guidance & Audio</button>
+  </div>
+
+  <!-- Leaflet JS & Turf.js CDN -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+  <script>
+    // 1. LINZ Basemap API Key setup
+    const LINZ_API_KEY = 'c01kzjrd1dr2ffbk1e641138427'; // Replace with your LINZ Basemap key
+    
+    // Default fallback center (Palmerston North / Manawatū area)
+    let map = L.map('map').setView([-40.355, 175.612], 15);
+
+    // Load LINZ Aerial Basemap Tile Layer
+    const linzTileUrl = `https://basemaps.linz.govt.nz/v1/tiles/aerial/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`;
+    const linzLayer = L.tileLayer(linzTileUrl, {
+      maxZoom: 20,
+      attribution: '© Land Information New Zealand'
+    }).addTo(map);
+
+    // Fallback OpenStreetMap if LINZ key is invalid/missing
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      opacity: 0.3
+    }).addTo(map);
+
+    // App State
+    let pointA = null;
+    let pointB = null;
+    let currentGpsPos = null;
+    let markerA = null;
+    let markerB = null;
+    let userMarker = null;
+    let swathLine = null;
+    let watchId = null;
+    let isGuiding = false;
+    let audioCtx = null;
+    let lastAudioTime = 0;
+
+    // UI Elements
+    const hud = document.getElementById('hud');
+    const hudStatus = document.getElementById('hud-status');
+    const hudSub = document.getElementById('hud-sub');
+    const tolInput = document.getElementById('tolerance');
+    const tolVal = document.getElementById('tol-val');
+
+    tolInput.addEventListener('input', (e) => tolVal.innerText = e.target.value);
+
+    // Map Click Handler for setting A/B Points visually
+    map.on('click', function(e) {
+      if (!pointA) {
+        setPoint('A', e.latlng);
+      } else if (!pointB) {
+        setPoint('B', e.latlng);
+      }
+    });
+
+    function setPoint(type, latlng = null) {
+      const pos = latlng || (currentGpsPos ? L.latLng(currentGpsPos[1], currentGpsPos[0]) : map.getCenter());
+      
+      if (type === 'A') {
+        pointA = [pos.lng, pos.lat]; // Turf uses [Lon, Lat]
+        if (markerA) map.removeLayer(markerA);
+        markerA = L.marker([pos.lat, pos.lng], { title: 'Point A' }).addTo(map).bindPopup('Point A').openPopup();
+      } else if (type === 'B') {
+        pointB = [pos.lng, pos.lat];
+        if (markerB) map.removeLayer(markerB);
+        markerB = L.marker([pos.lat, pos.lng], { title: 'Point B' }).addTo(map).bindPopup('Point B').openPopup();
+      }
+
+      updateSwathLine();
+    }
+
+    function clearLine() {
+      pointA = null;
+      pointB = null;
+      if (markerA) map.removeLayer(markerA);
+      if (markerB) map.removeLayer(markerB);
+      if (swathLine) map.removeLayer(swathLine);
+      hudStatus.innerText = "STANDBY";
+      hudSub.innerText = "Set Point A & B to define A-B Swath Line";
+      hud.className = "";
+    }
+
+    function updateSwathLine() {
+      if (pointA && pointB) {
+        const coords = [[pointA[1], pointA[0]], [pointB[1], pointB[0]]];
+        if (swathLine) map.removeLayer(swathLine);
+        swathLine = L.polyline(coords, { color: '#00e5ff', weight: 4, dashArray: '5, 10' }).addTo(map);
+        map.fitBounds(swathLine.getBounds(), { padding: [50, 50] });
+        hudStatus.innerText = "LINE READY";
+        hudSub.innerText = "Press Start Guidance to begin tracking";
+      }
+    }
+
+    // 2. GPS Location Tracker
+    function startGpsTracking() {
+      if ('geolocation' in navigator) {
+        watchId = navigator.geolocation.watchPosition(
+          (position) => {
+            const { latitude, longitude, accuracy } = position.coords;
+            currentGpsPos = [longitude, latitude];
+
+            // Render user position marker
+            if (!userMarker) {
+              userMarker = L.circleMarker([latitude, longitude], { radius: 8, color: '#ffffff', fillColor: '#007bff', fillOpacity: 1, weight: 3 }).addTo(map);
+            } else {
+              userMarker.setLatLng([latitude, longitude]);
+            }
+
+            if (isGuiding && pointA && pointB) {
+              processNavigation(currentGpsPos);
+            }
+          },
+          (error) => alert('GPS Error: ' + error.message),
+          { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        );
+      } else {
+        alert('Geolocation is not supported by your browser.');
+      }
+    }
+
+    // 3. Cross-Track Error Math & Side Determination
+    function processNavigation(userCoords) {
+      const pt = turf.point(userCoords);
+      const line = turf.lineString([pointA, pointB]);
+      
+      // Calculate perpendicular distance from GPS point to A-B line
+      const distanceMeters = turf.pointToLineDistance(pt, line, { units: 'meters' });
+      
+      // Determine Left vs Right side using Cross Product (x1*y2 - y1*x2)
+      const u = [pointB[0] - pointA[0], pointB[1] - pointA[1]];
+      const v = [userCoords[0] - pointA[0], userCoords[1] - pointA[1]];
+      const crossProduct = (u[0] * v[1]) - (u[1] * v[0]);
+      const side = crossProduct > 0 ? "LEFT" : "RIGHT";
+
+      const tolerance = parseFloat(tolInput.value);
+
+      // Update Visual Lightbar HUD
+      if (distanceMeters <= tolerance) {
+        hud.className = "on-track";
+        hudStatus.innerText = "ON TRACK";
+        hudSub.innerText = `${distanceMeters.toFixed(1)}m off line (Tolerance: ${tolerance}m)`;
+      } else {
+        hud.className = "off-track";
+        hudStatus.innerText = `${distanceMeters.toFixed(1)}m ${side}`;
+        hudSub.innerText = `VEERING OFF COURSE! (Threshold: ${tolerance}m)`;
+        
+        // Trigger Audible Beep Signal
+        playBeepAlert(distanceMeters, side);
+      }
+    }
+
+    // 4. Web Audio Synthesizer
+    function playBeepAlert(drift, side) {
+      const now = Date.now();
+      // Throttle beep frequency: faster pings the further off-track you drift
+      const interval = Math.max(200, 1000 - (drift * 100)); 
+
+      if (now - lastAudioTime > interval) {
+        lastAudioTime = now;
+
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+
+        // Higher pitch for larger drift
+        const pitch = Math.min(400 + (drift * 120), 1200);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(pitch, audioCtx.currentTime);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.12); // Short pulse
+      }
+    }
+
+    function toggleGuidance() {
+      const btn = document.getElementById('btn-toggle');
+      if (!isGuiding) {
+        if (!pointA || !pointB) {
+          alert('Please set both Point A and Point B first.');
+          return;
+        }
+        
+        // Initialize Audio Context on user button click
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        isGuiding = true;
+        btn.innerText = "Stop Guidance";
+        btn.className = "btn-danger";
+        startGpsTracking();
+      } else {
+        isGuiding = false;
+        btn.innerText = "Start Guidance & Audio";
+        btn.className = "btn-success";
+        if (watchId) navigator.geolocation.clearWatch(watchId);
+        hudStatus.innerText = "PAUSED";
+        hud.className = "";
+      }
+    }
+
+    // Start passive GPS on initial load
+    startGpsTracking();
+  </script>
+</body>
+</html>
