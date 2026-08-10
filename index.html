@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Field Swath & Geofence Guide</title>
+  <title>Field Guidance & Swather</title>
   
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -23,7 +23,7 @@
       width: 90%;
       max-width: 450px;
       padding: 10px 14px;
-      background: rgba(20, 20, 20, 0.9);
+      background: rgba(20, 20, 20, 0.92);
       color: #fff;
       border-radius: 12px;
       z-index: 1000;
@@ -41,7 +41,7 @@
     /* Bottom Control Panel */
     #controls {
       position: absolute;
-      bottom: 15px;
+      bottom: 12px;
       left: 50%;
       transform: translateX(-50%);
       width: 92%;
@@ -54,7 +54,7 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
-      max-height: 45vh;
+      max-height: 50vh;
       overflow-y: auto;
     }
 
@@ -62,13 +62,13 @@
     button {
       flex: 1;
       min-width: 45%;
-      padding: 10px;
+      padding: 9px;
       border: none;
       border-radius: 8px;
       background: #007bff;
       color: white;
       font-weight: bold;
-      font-size: 0.82rem;
+      font-size: 0.8rem;
       cursor: pointer;
     }
     button:active { opacity: 0.8; }
@@ -77,8 +77,10 @@
     button.btn-secondary { background: #6c757d; }
     button.btn-warning { background: #ff9800; color: #000; }
 
-    .setting-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; font-weight: bold; color: #333; }
-    input[type="range"] { flex: 1; margin-left: 10px; }
+    .setting-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; font-weight: bold; color: #333; gap: 8px; }
+    input[type="range"] { flex: 1; }
+    input[type="number"] { width: 55px; padding: 4px; border-radius: 4px; border: 1px solid #ccc; text-align: center; }
+    select { padding: 5px; border-radius: 6px; border: 1px solid #ccc; font-size: 0.8rem; flex: 1; }
   </style>
 </head>
 <body>
@@ -86,7 +88,7 @@
   <!-- Visual HUD Lightbar -->
   <div id="hud">
     <div id="hud-status">STANDBY</div>
-    <div id="hud-sub">Tap map or use buttons below to set A-B line / Field</div>
+    <div id="hud-sub">Tap map to set A-B line, or draw field boundary</div>
   </div>
 
   <!-- Map Container -->
@@ -94,9 +96,35 @@
 
   <!-- Floating Controls -->
   <div id="controls">
+    <!-- Tolerance & Swath Settings -->
     <div class="setting-row">
       <span>Tolerance: <span id="tol-val">1.5</span>m</span>
       <input type="range" id="tolerance" min="0.5" max="10" step="0.5" value="1.5" />
+    </div>
+
+    <div class="setting-row">
+      <span>Swath Width:</span>
+      <input type="number" id="swath-width" value="10" min="1" max="100" />m
+      <button class="btn-secondary" style="min-width:auto; padding: 5px 8px;" onclick="generateSwaths()">Gen Passes</button>
+    </div>
+
+    <!-- Audio & Haptic Feedback Dropdowns -->
+    <div class="setting-row">
+      <span>Feedback:</span>
+      <select id="sound-mode">
+        <option value="pitch">Pitch (Low=L / High=R)</option>
+        <option value="pulse">Rhythm (1 Beep=L / 2 Beep=R)</option>
+        <option value="wave">Tone (Smooth=L / Harsh=R)</option>
+        <option value="mute">Muted / Visual Only</option>
+      </select>
+    </div>
+
+    <div class="setting-row">
+      <span>Vibration:</span>
+      <select id="haptic-mode">
+        <option value="on">Enabled (Haptic On)</option>
+        <option value="off">Disabled</option>
+      </select>
     </div>
     
     <!-- Point A & B Controls -->
@@ -119,46 +147,28 @@
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
 
   <script>
-    const LINZ_API_KEY = 'c01kzjrd1dr2ffbk1e641138427'; // Replace with your LINZ Basemap key
+    const LINZ_API_KEY = 'c01kzjrd1dr2ffbk1e641138427'; // Replace with your LINZ key
     
     // Default Map Setup
     let map = L.map('map', { zoomControl: false }).setView([-40.355, 175.612], 15);
     L.control.zoom({ position: 'topleft' }).addTo(map);
 
     // 1. Basemap Layer Definitions
-    const linzAerial = L.tileLayer(`https://basemaps.linz.govt.nz/v1/tiles/aerial/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`, {
-      maxZoom: 20,
-      attribution: '© LINZ Aerial'
-    });
+    const linzAerial = L.tileLayer(`https://basemaps.linz.govt.nz/v1/tiles/aerial/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`, { maxZoom: 20, attribution: '© LINZ' });
+    const linzTopo = L.tileLayer(`https://basemaps.linz.govt.nz/v1/tiles/topo50/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`, { maxZoom: 20, attribution: '© LINZ Topo50' });
+    const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
 
-    const linzTopo = L.tileLayer(`https://basemaps.linz.govt.nz/v1/tiles/topo50/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`, {
-      maxZoom: 20,
-      attribution: '© LINZ Topo50'
-    });
-
-    const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '© OpenStreetMap'
-    });
-
-    // Add Aerial by default
     linzAerial.addTo(map);
+    L.control.layers({ "LINZ Aerial": linzAerial, "LINZ Topo50": linzTopo, "OpenStreetMap": openStreetMap }, null, { position: 'topright' }).addTo(map);
 
-    // Top-Right Basemap Switcher Control
-    const baseLayers = {
-      "LINZ Aerial": linzAerial,
-      "LINZ Topo50": linzTopo,
-      "OpenStreetMap": openStreetMap
-    };
-    L.control.layers(baseLayers, null, { position: 'topright' }).addTo(map);
-
-    // App State
+    // State Variables
     let pointA = null, pointB = null;
     let markerA = null, markerB = null;
     let currentGpsPos = null, userMarker = null;
     let swathLine = null;
+    let swathGroup = L.layerGroup().addTo(map);
+    let parallelPasses = []; // Holds generated parallel lines
     
-    // Polygon Geofence State
     let polyPoints = [];
     let polyMarkers = [];
     let fieldPolygon = null;
@@ -178,48 +188,34 @@
 
     tolInput.addEventListener('input', (e) => tolVal.innerText = e.target.value);
 
-    // Map Click Handler (Context-Aware for Line vs Polygon Drawing)
+    // Map Click Handler
     map.on('click', function(e) {
       if (isDrawingPoly) {
         addPolyPoint([e.latlng.lng, e.latlng.lat]);
       } else {
-        if (!pointA) {
-          setPointAtLatLng('A', e.latlng);
-        } else if (!pointB) {
-          setPointAtLatLng('B', e.latlng);
-        }
+        if (!pointA) setPointAtLatLng('A', e.latlng);
+        else if (!pointB) setPointAtLatLng('B', e.latlng);
       }
     });
 
-    // Draggable Point Setup
     function setPointAtLatLng(type, latlng) {
       const coords = [latlng.lng, latlng.lat];
-      
       if (type === 'A') {
         pointA = coords;
         if (markerA) map.removeLayer(markerA);
         markerA = L.marker(latlng, { draggable: true, title: 'Point A' }).addTo(map);
-        markerA.on('drag', (e) => {
-          pointA = [e.latlng.lng, e.latlng.lat];
-          updateSwathLine();
-        });
+        markerA.on('drag', (e) => { pointA = [e.latlng.lng, e.latlng.lat]; updateSwathLine(); });
       } else if (type === 'B') {
         pointB = coords;
         if (markerB) map.removeLayer(markerB);
         markerB = L.marker(latlng, { draggable: true, title: 'Point B' }).addTo(map);
-        markerB.on('drag', (e) => {
-          pointB = [e.latlng.lng, e.latlng.lat];
-          updateSwathLine();
-        });
+        markerB.on('drag', (e) => { pointB = [e.latlng.lng, e.latlng.lat]; updateSwathLine(); });
       }
       updateSwathLine();
     }
 
     function setPoint(type) {
-      if (!currentGpsPos) {
-        alert("Acquiring GPS location... try again in a moment.");
-        return;
-      }
+      if (!currentGpsPos) return alert("Waiting for GPS location...");
       setPointAtLatLng(type, L.latLng(currentGpsPos[1], currentGpsPos[0]));
     }
 
@@ -229,8 +225,34 @@
         if (swathLine) map.removeLayer(swathLine);
         swathLine = L.polyline(coords, { color: '#00e5ff', weight: 4, dashArray: '6, 8' }).addTo(map);
         hudStatus.innerText = "LINE READY";
-        hudSub.innerText = "Drag A/B pins to adjust, or press Start Guidance";
+        hudSub.innerText = "Drag pins to adjust, or tap 'Gen Passes' for parallel swaths";
       }
+    }
+
+    // Optional Feature: Generate Parallel Swath Lines Across Paddock
+    function generateSwaths() {
+      if (!pointA || !pointB) return alert("Set Point A and B first!");
+      swathGroup.clearLayers();
+      parallelPasses = [];
+
+      const baseLine = turf.lineString([pointA, pointB]);
+      parallelPasses.push(baseLine);
+
+      const width = parseFloat(document.getElementById('swath-width').value);
+      const numPasses = 10; // Generates 10 parallel passes left & right
+
+      for (let i = 1; i <= numPasses; i++) {
+        const leftLine = turf.lineOffset(baseLine, i * width, { units: 'meters' });
+        const rightLine = turf.lineOffset(baseLine, -i * width, { units: 'meters' });
+
+        parallelPasses.push(leftLine, rightLine);
+
+        L.geoJSON(leftLine, { style: { color: '#00e5ff', weight: 2, dashArray: '4,6', opacity: 0.6 } }).addTo(swathGroup);
+        L.geoJSON(rightLine, { style: { color: '#00e5ff', weight: 2, dashArray: '4,6', opacity: 0.6 } }).addTo(swathGroup);
+      }
+
+      hudStatus.innerText = "SWATHS GENERATED";
+      hudSub.innerText = `Created ${numPasses * 2 + 1} parallel passes at ${width}m width`;
     }
 
     // Polygon Geofencing Logic
@@ -266,17 +288,16 @@
       if (polyPoints.length >= 3) {
         hudStatus.innerText = "FIELD BOUNDARY SET";
         hudSub.innerText = "Geofence active. Start guidance when ready.";
-      } else {
-        alert("A field boundary requires at least 3 points.");
-      }
+      } else alert("Field boundary requires at least 3 points.");
     }
 
     function clearAll() {
-      pointA = null; pointB = null; polyPoints = [];
+      pointA = null; pointB = null; polyPoints = []; parallelPasses = [];
       if (markerA) map.removeLayer(markerA);
       if (markerB) map.removeLayer(markerB);
       if (swathLine) map.removeLayer(swathLine);
       if (fieldPolygon) map.removeLayer(fieldPolygon);
+      swathGroup.clearLayers();
       polyMarkers.forEach(m => map.removeLayer(m));
       polyMarkers = [];
       hudStatus.innerText = "STANDBY";
@@ -299,9 +320,7 @@
               userMarker.setLatLng([latitude, longitude]);
             }
 
-            if (isGuiding) {
-              processNavigation(currentGpsPos);
-            }
+            if (isGuiding) processNavigation(currentGpsPos);
           },
           (error) => console.log('GPS error:', error),
           { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
@@ -309,38 +328,43 @@
       }
     }
 
-    // Navigation & Geofence Math Engine
+    // Navigation & Math Engine
     function processNavigation(userCoords) {
       const pt = turf.point(userCoords);
-      let isOutOfBounds = false;
 
       // 1. Check Field Polygon Geofence
       if (polyPoints.length >= 3) {
-        // Close ring for Turf.js
         const closedPolyCoords = [...polyPoints, polyPoints[0]];
         const polyFeature = turf.polygon([closedPolyCoords]);
-        
         if (!turf.booleanPointInPolygon(pt, polyFeature)) {
-          isOutOfBounds = true;
+          hud.className = "out-of-bounds";
+          hudStatus.innerText = "OUT OF BOUNDS!";
+          hudSub.innerText = "You stepped outside the field boundary!";
+          triggerFeedback(10, 'OUT');
+          return;
         }
       }
 
-      if (isOutOfBounds) {
-        hud.className = "out-of-bounds";
-        hudStatus.innerText = "OUT OF BOUNDS!";
-        hudSub.innerText = "You have stepped outside the field boundary!";
-        playBeepAlert(10, 'OUT');
-        return;
+      // 2. Determine Nearest Swath / Guidance Line
+      let activeLine = null;
+      if (parallelPasses.length > 0) {
+        // Find closest parallel pass
+        let minD = Infinity;
+        parallelPasses.forEach(pass => {
+          const d = turf.pointToLineDistance(pt, pass, { units: 'meters' });
+          if (d < minD) { minD = d; activeLine = pass; }
+        });
+      } else if (pointA && pointB) {
+        activeLine = turf.lineString([pointA, pointB]);
       }
 
-      // 2. Check Swath Line Cross-Track Error
-      if (pointA && pointB) {
-        const line = turf.lineString([pointA, pointB]);
-        const distanceMeters = turf.pointToLineDistance(pt, line, { units: 'meters' });
+      if (activeLine) {
+        const distanceMeters = turf.pointToLineDistance(pt, activeLine, { units: 'meters' });
         
-        // Calculate Left vs Right drift
-        const u = [pointB[0] - pointA[0], pointB[1] - pointA[1]];
-        const v = [userCoords[0] - pointA[0], userCoords[1] - pointA[1]];
+        // Calculate Left vs Right drift relative to nearest line segment
+        const coords = activeLine.geometry.coordinates;
+        const u = [coords[1][0] - coords[0][0], coords[1][1] - coords[0][1]];
+        const v = [userCoords[0] - coords[0][0], userCoords[1] - coords[0][1]];
         const side = ((u[0] * v[1]) - (u[1] * v[0])) > 0 ? "LEFT" : "RIGHT";
         const tolerance = parseFloat(tolInput.value);
 
@@ -352,35 +376,68 @@
           hud.className = "off-track";
           hudStatus.innerText = `${distanceMeters.toFixed(1)}m ${side}`;
           hudSub.innerText = `DRIFTING OFF LINE! (Tolerance: ${tolerance}m)`;
-          playBeepAlert(distanceMeters, side);
+          triggerFeedback(distanceMeters, side);
         }
       }
     }
 
-    // Audio Alert Engine
-    function playBeepAlert(drift, side) {
+    // Multi-Mode Audio & Haptic Feedback Engine
+    function triggerFeedback(drift, side) {
       const now = Date.now();
-      const interval = Math.max(150, 900 - (drift * 120)); 
+      const interval = Math.max(180, 900 - (drift * 120)); 
 
       if (now - lastAudioTime > interval) {
         lastAudioTime = now;
 
+        // Trigger Haptic Vibration if enabled
+        const hapticMode = document.getElementById('haptic-mode').value;
+        if (hapticMode === 'on' && 'vibrate' in navigator) {
+          if (side === 'OUT') navigator.vibrate([200, 100, 200]);
+          else if (side === 'LEFT') navigator.vibrate([100]);
+          else if (side === 'RIGHT') navigator.vibrate([60, 40, 60]);
+        }
+
+        // Play Selected Audio Mode
+        const soundMode = document.getElementById('sound-mode').value;
+        if (soundMode === 'mute') return;
+
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') audioCtx.resume();
 
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
+        if (side === 'OUT') {
+          playPulse(300, 'sawtooth', 0.25);
+          return;
+        }
 
-        const pitch = side === 'OUT' ? 300 : Math.min(450 + (drift * 130), 1300);
-        osc.type = side === 'OUT' ? 'sawtooth' : 'sine';
-        osc.frequency.setValueAtTime(pitch, audioCtx.currentTime);
-
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.15);
+        if (soundMode === 'pitch') {
+          // Mode 1: Low Pitch for Left (380Hz), High Pitch for Right (850Hz)
+          const pitch = side === 'LEFT' ? 380 : 850;
+          playPulse(pitch, 'sine', 0.12);
+        } 
+        else if (soundMode === 'pulse') {
+          // Mode 2: 1 Ping for Left, Rapid 2 Pings for Right
+          playPulse(600, 'sine', 0.08);
+          if (side === 'RIGHT') {
+            setTimeout(() => playPulse(600, 'sine', 0.08), 100);
+          }
+        } 
+        else if (soundMode === 'wave') {
+          // Mode 3: Smooth Sine for Left, Sharp Square for Right
+          const waveType = side === 'LEFT' ? 'sine' : 'square';
+          playPulse(550, waveType, 0.14);
+        }
       }
+    }
+
+    function playPulse(freq, type, duration) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + duration);
     }
 
     function toggleGuidance() {
@@ -402,7 +459,6 @@
       }
     }
 
-    // Start passive location on load
     startGpsTracking();
   </script>
 </body>
