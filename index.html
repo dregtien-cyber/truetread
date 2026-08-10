@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Field Swath Guidance</title>
+  <title>Field Swath & Geofence Guide</title>
   
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -22,7 +22,7 @@
       transform: translateX(-50%);
       width: 90%;
       max-width: 450px;
-      padding: 12px 16px;
+      padding: 10px 14px;
       background: rgba(20, 20, 20, 0.9);
       color: #fff;
       border-radius: 12px;
@@ -33,46 +33,51 @@
     }
     #hud.on-track { background: rgba(16, 124, 65, 0.95); }
     #hud.off-track { background: rgba(209, 52, 52, 0.95); }
+    #hud.out-of-bounds { background: rgba(180, 20, 20, 0.98); border: 2px solid #ffcc00; }
     
-    #hud-status { font-size: 1.3rem; font-weight: bold; margin-bottom: 4px; }
-    #hud-sub { font-size: 0.85rem; opacity: 0.8; }
+    #hud-status { font-size: 1.2rem; font-weight: bold; margin-bottom: 2px; }
+    #hud-sub { font-size: 0.8rem; opacity: 0.85; }
 
     /* Bottom Control Panel */
     #controls {
       position: absolute;
-      bottom: 20px;
+      bottom: 15px;
       left: 50%;
       transform: translateX(-50%);
-      width: 90%;
+      width: 92%;
       max-width: 450px;
-      background: rgba(255, 255, 255, 0.95);
-      padding: 14px;
+      background: rgba(255, 255, 255, 0.96);
+      padding: 12px;
       border-radius: 14px;
       z-index: 1000;
       box-shadow: 0 4px 16px rgba(0,0,0,0.3);
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 8px;
+      max-height: 45vh;
+      overflow-y: auto;
     }
 
-    .btn-group { display: flex; gap: 8px; }
+    .btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
     button {
       flex: 1;
-      padding: 12px;
+      min-width: 45%;
+      padding: 10px;
       border: none;
       border-radius: 8px;
       background: #007bff;
       color: white;
       font-weight: bold;
-      font-size: 0.9rem;
+      font-size: 0.82rem;
       cursor: pointer;
     }
     button:active { opacity: 0.8; }
     button.btn-danger { background: #dc3545; }
     button.btn-success { background: #28a745; }
     button.btn-secondary { background: #6c757d; }
+    button.btn-warning { background: #ff9800; color: #000; }
 
-    .setting-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; font-weight: bold; color: #333; }
+    .setting-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; font-weight: bold; color: #333; }
     input[type="range"] { flex: 1; margin-left: 10px; }
   </style>
 </head>
@@ -81,7 +86,7 @@
   <!-- Visual HUD Lightbar -->
   <div id="hud">
     <div id="hud-status">STANDBY</div>
-    <div id="hud-sub">Set Point A & B to define A-B Swath Line</div>
+    <div id="hud-sub">Tap map or use buttons below to set A-B line / Field</div>
   </div>
 
   <!-- Map Container -->
@@ -94,10 +99,16 @@
       <input type="range" id="tolerance" min="0.5" max="10" step="0.5" value="1.5" />
     </div>
     
+    <!-- Point A & B Controls -->
     <div class="btn-group">
-      <button id="btn-a" onclick="setPoint('A')">Set Point A</button>
-      <button id="btn-b" onclick="setPoint('B')">Set Point B</button>
-      <button class="btn-secondary" onclick="clearLine()">Clear Line</button>
+      <button id="btn-a" onclick="setPoint('A')">Set A (Here)</button>
+      <button id="btn-b" onclick="setPoint('B')">Set B (Here)</button>
+    </div>
+
+    <!-- Polygon Field Controls -->
+    <div class="btn-group">
+      <button id="btn-poly" class="btn-warning" onclick="togglePolyMode()">Draw Field Boundary</button>
+      <button class="btn-secondary" onclick="clearAll()">Clear Map</button>
     </div>
 
     <button id="btn-toggle" class="btn-success" onclick="toggleGuidance()">Start Guidance & Audio</button>
@@ -108,33 +119,51 @@
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
 
   <script>
-    // 1. LINZ Basemap API Key setup
     const LINZ_API_KEY = 'c01kzjrd1dr2ffbk1e641138427'; // Replace with your LINZ Basemap key
     
-    // Default fallback center (Palmerston North / Manawatū area)
-    let map = L.map('map').setView([-40.355, 175.612], 15);
+    // Default Map Setup
+    let map = L.map('map', { zoomControl: false }).setView([-40.355, 175.612], 15);
+    L.control.zoom({ position: 'topleft' }).addTo(map);
 
-    // Load LINZ Aerial Basemap Tile Layer
-    const linzTileUrl = `https://basemaps.linz.govt.nz/v1/tiles/aerial/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`;
-    const linzLayer = L.tileLayer(linzTileUrl, {
+    // 1. Basemap Layer Definitions
+    const linzAerial = L.tileLayer(`https://basemaps.linz.govt.nz/v1/tiles/aerial/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`, {
       maxZoom: 20,
-      attribution: '© Land Information New Zealand'
-    }).addTo(map);
+      attribution: '© LINZ Aerial'
+    });
 
-    // Fallback OpenStreetMap if LINZ key is invalid/missing
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    const linzTopo = L.tileLayer(`https://basemaps.linz.govt.nz/v1/tiles/topo50/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`, {
+      maxZoom: 20,
+      attribution: '© LINZ Topo50'
+    });
+
+    const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      opacity: 0.3
-    }).addTo(map);
+      attribution: '© OpenStreetMap'
+    });
+
+    // Add Aerial by default
+    linzAerial.addTo(map);
+
+    // Top-Right Basemap Switcher Control
+    const baseLayers = {
+      "LINZ Aerial": linzAerial,
+      "LINZ Topo50": linzTopo,
+      "OpenStreetMap": openStreetMap
+    };
+    L.control.layers(baseLayers, null, { position: 'topright' }).addTo(map);
 
     // App State
-    let pointA = null;
-    let pointB = null;
-    let currentGpsPos = null;
-    let markerA = null;
-    let markerB = null;
-    let userMarker = null;
+    let pointA = null, pointB = null;
+    let markerA = null, markerB = null;
+    let currentGpsPos = null, userMarker = null;
     let swathLine = null;
+    
+    // Polygon Geofence State
+    let polyPoints = [];
+    let polyMarkers = [];
+    let fieldPolygon = null;
+    let isDrawingPoly = false;
+
     let watchId = null;
     let isGuiding = false;
     let audioCtx = null;
@@ -149,152 +178,214 @@
 
     tolInput.addEventListener('input', (e) => tolVal.innerText = e.target.value);
 
-    // Map Click Handler for setting A/B Points visually
+    // Map Click Handler (Context-Aware for Line vs Polygon Drawing)
     map.on('click', function(e) {
-      if (!pointA) {
-        setPoint('A', e.latlng);
-      } else if (!pointB) {
-        setPoint('B', e.latlng);
+      if (isDrawingPoly) {
+        addPolyPoint([e.latlng.lng, e.latlng.lat]);
+      } else {
+        if (!pointA) {
+          setPointAtLatLng('A', e.latlng);
+        } else if (!pointB) {
+          setPointAtLatLng('B', e.latlng);
+        }
       }
     });
 
-    function setPoint(type, latlng = null) {
-      const pos = latlng || (currentGpsPos ? L.latLng(currentGpsPos[1], currentGpsPos[0]) : map.getCenter());
+    // Draggable Point Setup
+    function setPointAtLatLng(type, latlng) {
+      const coords = [latlng.lng, latlng.lat];
       
       if (type === 'A') {
-        pointA = [pos.lng, pos.lat]; // Turf uses [Lon, Lat]
+        pointA = coords;
         if (markerA) map.removeLayer(markerA);
-        markerA = L.marker([pos.lat, pos.lng], { title: 'Point A' }).addTo(map).bindPopup('Point A').openPopup();
+        markerA = L.marker(latlng, { draggable: true, title: 'Point A' }).addTo(map);
+        markerA.on('drag', (e) => {
+          pointA = [e.latlng.lng, e.latlng.lat];
+          updateSwathLine();
+        });
       } else if (type === 'B') {
-        pointB = [pos.lng, pos.lat];
+        pointB = coords;
         if (markerB) map.removeLayer(markerB);
-        markerB = L.marker([pos.lat, pos.lng], { title: 'Point B' }).addTo(map).bindPopup('Point B').openPopup();
+        markerB = L.marker(latlng, { draggable: true, title: 'Point B' }).addTo(map);
+        markerB.on('drag', (e) => {
+          pointB = [e.latlng.lng, e.latlng.lat];
+          updateSwathLine();
+        });
       }
-
       updateSwathLine();
     }
 
-    function clearLine() {
-      pointA = null;
-      pointB = null;
-      if (markerA) map.removeLayer(markerA);
-      if (markerB) map.removeLayer(markerB);
-      if (swathLine) map.removeLayer(swathLine);
-      hudStatus.innerText = "STANDBY";
-      hudSub.innerText = "Set Point A & B to define A-B Swath Line";
-      hud.className = "";
+    function setPoint(type) {
+      if (!currentGpsPos) {
+        alert("Acquiring GPS location... try again in a moment.");
+        return;
+      }
+      setPointAtLatLng(type, L.latLng(currentGpsPos[1], currentGpsPos[0]));
     }
 
     function updateSwathLine() {
       if (pointA && pointB) {
         const coords = [[pointA[1], pointA[0]], [pointB[1], pointB[0]]];
         if (swathLine) map.removeLayer(swathLine);
-        swathLine = L.polyline(coords, { color: '#00e5ff', weight: 4, dashArray: '5, 10' }).addTo(map);
-        map.fitBounds(swathLine.getBounds(), { padding: [50, 50] });
+        swathLine = L.polyline(coords, { color: '#00e5ff', weight: 4, dashArray: '6, 8' }).addTo(map);
         hudStatus.innerText = "LINE READY";
-        hudSub.innerText = "Press Start Guidance to begin tracking";
+        hudSub.innerText = "Drag A/B pins to adjust, or press Start Guidance";
       }
     }
 
-    // 2. GPS Location Tracker
+    // Polygon Geofencing Logic
+    function togglePolyMode() {
+      const btn = document.getElementById('btn-poly');
+      if (!isDrawingPoly) {
+        isDrawingPoly = true;
+        btn.innerText = "Finish Field";
+        btn.className = "btn-danger";
+        hudStatus.innerText = "DRAWING FIELD";
+        hudSub.innerText = "Tap map edges to draw boundary perimeter";
+      } else {
+        isDrawingPoly = false;
+        btn.innerText = "Draw Field Boundary";
+        btn.className = "btn-warning";
+        closePolygon();
+      }
+    }
+
+    function addPolyPoint(coords) {
+      polyPoints.push(coords);
+      const marker = L.circleMarker([coords[1], coords[0]], { radius: 5, color: '#ff9800' }).addTo(map);
+      polyMarkers.push(marker);
+
+      if (polyPoints.length >= 2) {
+        const latLngs = polyPoints.map(p => [p[1], p[0]]);
+        if (fieldPolygon) map.removeLayer(fieldPolygon);
+        fieldPolygon = L.polygon(latLngs, { color: '#ff9800', fillColor: '#ff9800', fillOpacity: 0.2 }).addTo(map);
+      }
+    }
+
+    function closePolygon() {
+      if (polyPoints.length >= 3) {
+        hudStatus.innerText = "FIELD BOUNDARY SET";
+        hudSub.innerText = "Geofence active. Start guidance when ready.";
+      } else {
+        alert("A field boundary requires at least 3 points.");
+      }
+    }
+
+    function clearAll() {
+      pointA = null; pointB = null; polyPoints = [];
+      if (markerA) map.removeLayer(markerA);
+      if (markerB) map.removeLayer(markerB);
+      if (swathLine) map.removeLayer(swathLine);
+      if (fieldPolygon) map.removeLayer(fieldPolygon);
+      polyMarkers.forEach(m => map.removeLayer(m));
+      polyMarkers = [];
+      hudStatus.innerText = "STANDBY";
+      hudSub.innerText = "Map cleared.";
+      hud.className = "";
+    }
+
+    // GPS Tracking Loop
     function startGpsTracking() {
       if ('geolocation' in navigator) {
         watchId = navigator.geolocation.watchPosition(
           (position) => {
-            const { latitude, longitude, accuracy } = position.coords;
+            const { latitude, longitude } = position.coords;
             currentGpsPos = [longitude, latitude];
 
-            // Render user position marker
             if (!userMarker) {
               userMarker = L.circleMarker([latitude, longitude], { radius: 8, color: '#ffffff', fillColor: '#007bff', fillOpacity: 1, weight: 3 }).addTo(map);
+              map.setView([latitude, longitude], 17);
             } else {
               userMarker.setLatLng([latitude, longitude]);
             }
 
-            if (isGuiding && pointA && pointB) {
+            if (isGuiding) {
               processNavigation(currentGpsPos);
             }
           },
-          (error) => alert('GPS Error: ' + error.message),
+          (error) => console.log('GPS error:', error),
           { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
         );
-      } else {
-        alert('Geolocation is not supported by your browser.');
       }
     }
 
-    // 3. Cross-Track Error Math & Side Determination
+    // Navigation & Geofence Math Engine
     function processNavigation(userCoords) {
       const pt = turf.point(userCoords);
-      const line = turf.lineString([pointA, pointB]);
-      
-      // Calculate perpendicular distance from GPS point to A-B line
-      const distanceMeters = turf.pointToLineDistance(pt, line, { units: 'meters' });
-      
-      // Determine Left vs Right side using Cross Product (x1*y2 - y1*x2)
-      const u = [pointB[0] - pointA[0], pointB[1] - pointA[1]];
-      const v = [userCoords[0] - pointA[0], userCoords[1] - pointA[1]];
-      const crossProduct = (u[0] * v[1]) - (u[1] * v[0]);
-      const side = crossProduct > 0 ? "LEFT" : "RIGHT";
+      let isOutOfBounds = false;
 
-      const tolerance = parseFloat(tolInput.value);
-
-      // Update Visual Lightbar HUD
-      if (distanceMeters <= tolerance) {
-        hud.className = "on-track";
-        hudStatus.innerText = "ON TRACK";
-        hudSub.innerText = `${distanceMeters.toFixed(1)}m off line (Tolerance: ${tolerance}m)`;
-      } else {
-        hud.className = "off-track";
-        hudStatus.innerText = `${distanceMeters.toFixed(1)}m ${side}`;
-        hudSub.innerText = `VEERING OFF COURSE! (Threshold: ${tolerance}m)`;
+      // 1. Check Field Polygon Geofence
+      if (polyPoints.length >= 3) {
+        // Close ring for Turf.js
+        const closedPolyCoords = [...polyPoints, polyPoints[0]];
+        const polyFeature = turf.polygon([closedPolyCoords]);
         
-        // Trigger Audible Beep Signal
-        playBeepAlert(distanceMeters, side);
+        if (!turf.booleanPointInPolygon(pt, polyFeature)) {
+          isOutOfBounds = true;
+        }
+      }
+
+      if (isOutOfBounds) {
+        hud.className = "out-of-bounds";
+        hudStatus.innerText = "OUT OF BOUNDS!";
+        hudSub.innerText = "You have stepped outside the field boundary!";
+        playBeepAlert(10, 'OUT');
+        return;
+      }
+
+      // 2. Check Swath Line Cross-Track Error
+      if (pointA && pointB) {
+        const line = turf.lineString([pointA, pointB]);
+        const distanceMeters = turf.pointToLineDistance(pt, line, { units: 'meters' });
+        
+        // Calculate Left vs Right drift
+        const u = [pointB[0] - pointA[0], pointB[1] - pointA[1]];
+        const v = [userCoords[0] - pointA[0], userCoords[1] - pointA[1]];
+        const side = ((u[0] * v[1]) - (u[1] * v[0])) > 0 ? "LEFT" : "RIGHT";
+        const tolerance = parseFloat(tolInput.value);
+
+        if (distanceMeters <= tolerance) {
+          hud.className = "on-track";
+          hudStatus.innerText = "ON TRACK";
+          hudSub.innerText = `${distanceMeters.toFixed(1)}m off line (Tolerance: ${tolerance}m)`;
+        } else {
+          hud.className = "off-track";
+          hudStatus.innerText = `${distanceMeters.toFixed(1)}m ${side}`;
+          hudSub.innerText = `DRIFTING OFF LINE! (Tolerance: ${tolerance}m)`;
+          playBeepAlert(distanceMeters, side);
+        }
       }
     }
 
-    // 4. Web Audio Synthesizer
+    // Audio Alert Engine
     function playBeepAlert(drift, side) {
       const now = Date.now();
-      // Throttle beep frequency: faster pings the further off-track you drift
-      const interval = Math.max(200, 1000 - (drift * 100)); 
+      const interval = Math.max(150, 900 - (drift * 120)); 
 
       if (now - lastAudioTime > interval) {
         lastAudioTime = now;
 
-        if (!audioCtx) {
-          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        }
-        if (audioCtx.state === 'suspended') {
-          audioCtx.resume();
-        }
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
 
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
 
-        // Higher pitch for larger drift
-        const pitch = Math.min(400 + (drift * 120), 1200);
-        osc.type = 'sine';
+        const pitch = side === 'OUT' ? 300 : Math.min(450 + (drift * 130), 1300);
+        osc.type = side === 'OUT' ? 'sawtooth' : 'sine';
         osc.frequency.setValueAtTime(pitch, audioCtx.currentTime);
 
         osc.connect(gain);
         gain.connect(audioCtx.destination);
 
         osc.start();
-        osc.stop(audioCtx.currentTime + 0.12); // Short pulse
+        osc.stop(audioCtx.currentTime + 0.15);
       }
     }
 
     function toggleGuidance() {
       const btn = document.getElementById('btn-toggle');
       if (!isGuiding) {
-        if (!pointA || !pointB) {
-          alert('Please set both Point A and Point B first.');
-          return;
-        }
-        
-        // Initialize Audio Context on user button click
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') audioCtx.resume();
 
@@ -306,13 +397,12 @@
         isGuiding = false;
         btn.innerText = "Start Guidance & Audio";
         btn.className = "btn-success";
-        if (watchId) navigator.geolocation.clearWatch(watchId);
         hudStatus.innerText = "PAUSED";
         hud.className = "";
       }
     }
 
-    // Start passive GPS on initial load
+    // Start passive location on load
     startGpsTracking();
   </script>
 </body>
