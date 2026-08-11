@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Field Guidance & Swather</title>
+  <title>Field Swather & Track Guide</title>
   
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -33,6 +33,7 @@
     }
     #hud.on-track { background: rgba(16, 124, 65, 0.95); }
     #hud.off-track { background: rgba(209, 52, 52, 0.95); }
+    #hud.overlap { background: rgba(220, 100, 0, 0.98); }
     #hud.out-of-bounds { background: rgba(180, 20, 20, 0.98); border: 2px solid #ffcc00; }
     
     #hud-status { font-size: 1.2rem; font-weight: bold; margin-bottom: 2px; }
@@ -54,7 +55,7 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
-      max-height: 50vh;
+      max-height: 52vh;
       overflow-y: auto;
     }
 
@@ -76,6 +77,7 @@
     button.btn-success { background: #28a745; }
     button.btn-secondary { background: #6c757d; }
     button.btn-warning { background: #ff9800; color: #000; }
+    button.btn-purple { background: #6f42c1; }
 
     .setting-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; font-weight: bold; color: #333; gap: 8px; }
     input[type="range"] { flex: 1; }
@@ -88,7 +90,7 @@
   <!-- Visual HUD Lightbar -->
   <div id="hud">
     <div id="hud-status">STANDBY</div>
-    <div id="hud-sub">Tap map to set A-B line, or draw field boundary</div>
+    <div id="hud-sub">Tap map to set line/field, or start track recording</div>
   </div>
 
   <!-- Map Container -->
@@ -96,7 +98,7 @@
 
   <!-- Floating Controls -->
   <div id="controls">
-    <!-- Tolerance & Swath Settings -->
+    <!-- Settings Rows -->
     <div class="setting-row">
       <span>Tolerance: <span id="tol-val">1.5</span>m</span>
       <input type="range" id="tolerance" min="0.5" max="10" step="0.5" value="1.5" />
@@ -108,7 +110,6 @@
       <button class="btn-secondary" style="min-width:auto; padding: 5px 8px;" onclick="generateSwaths()">Gen Passes</button>
     </div>
 
-    <!-- Audio & Haptic Feedback Dropdowns -->
     <div class="setting-row">
       <span>Feedback:</span>
       <select id="sound-mode">
@@ -120,11 +121,17 @@
     </div>
 
     <div class="setting-row">
-      <span>Vibration:</span>
-      <select id="haptic-mode">
-        <option value="on">Enabled (Haptic On)</option>
-        <option value="off">Disabled</option>
+      <span>Edge Guard:</span>
+      <select id="edge-guard-mode">
+        <option value="overlap">Alert on Overlap & Gaps</option>
+        <option value="off">Off (Line Guidance Only)</option>
       </select>
+    </div>
+
+    <!-- Track Recording Buttons -->
+    <div class="btn-group">
+      <button id="btn-rec" class="btn-purple" onclick="toggleTrackRecording()">REC Track: OFF</button>
+      <button class="btn-secondary" onclick="clearCurrentTrack()">Save & Clear Tracks</button>
     </div>
     
     <!-- Point A & B Controls -->
@@ -136,27 +143,44 @@
     <!-- Polygon Field Controls -->
     <div class="btn-group">
       <button id="btn-poly" class="btn-warning" onclick="togglePolyMode()">Draw Field Boundary</button>
-      <button class="btn-secondary" onclick="clearAll()">Clear Map</button>
+      <button class="btn-secondary" onclick="clearAllData()">Reset All</button>
     </div>
 
     <button id="btn-toggle" class="btn-success" onclick="toggleGuidance()">Start Guidance & Audio</button>
   </div>
 
-  <!-- Leaflet JS & Turf.js CDN -->
+  <!-- CDNs: Leaflet, Turf, PouchDB (Offline Tile Storage) -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pouchdb@7.3.1/dist/pouchdb.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet-tilelayer-pouchdbcached@0.2.5/L.TileLayer.PouchDBCached.js"></script>
 
   <script>
-    const LINZ_API_KEY = 'c01kzjrd1dr2ffbk1e641138427'; // Replace with your LINZ key
+    const LINZ_API_KEY = 'c01kzjrd1dr2ffbk1e641138427'; // Replace with your LINZ key //
     
     // Default Map Setup
     let map = L.map('map', { zoomControl: false }).setView([-40.355, 175.612], 15);
     L.control.zoom({ position: 'topleft' }).addTo(map);
 
-    // 1. Basemap Layer Definitions
-    const linzAerial = L.tileLayer(`https://basemaps.linz.govt.nz/v1/tiles/aerial/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`, { maxZoom: 20, attribution: '© LINZ' });
-    const linzTopo = L.tileLayer(`https://basemaps.linz.govt.nz/v1/tiles/topo50/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`, { maxZoom: 20, attribution: '© LINZ Topo50' });
-    const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
+    // 1. Tile Layers with Offline Caching Enabled (PouchDB)
+    const linzAerial = L.tileLayer(`https://basemaps.linz.govt.nz/v1/tiles/aerial/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`, {
+      maxZoom: 20,
+      useCache: true,
+      crossOrigin: true,
+      cacheMaxAge: 30 * 24 * 3600 * 1000 // 30 Days offline cache
+    });
+
+    const linzTopo = L.tileLayer(`https://basemaps.linz.govt.nz/v1/tiles/topo50/3857/{z}/{x}/{y}.png?api=${LINZ_API_KEY}`, {
+      maxZoom: 20,
+      useCache: true,
+      crossOrigin: true
+    });
+
+    const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      useCache: true,
+      crossOrigin: true
+    });
 
     linzAerial.addTo(map);
     L.control.layers({ "LINZ Aerial": linzAerial, "LINZ Topo50": linzTopo, "OpenStreetMap": openStreetMap }, null, { position: 'topright' }).addTo(map);
@@ -167,12 +191,19 @@
     let currentGpsPos = null, userMarker = null;
     let swathLine = null;
     let swathGroup = L.layerGroup().addTo(map);
-    let parallelPasses = []; // Holds generated parallel lines
+    let parallelPasses = [];
     
     let polyPoints = [];
     let polyMarkers = [];
     let fieldPolygon = null;
     let isDrawingPoly = false;
+
+    // Track Recording State
+    let isRecordingTrack = false;
+    let currentTrack = []; // Array of [lon, lat]
+    let recordedTracks = []; // Array of arrays (past tracks)
+    let trackLineLayer = L.polyline([], { color: '#00ff66', weight: 3 }).addTo(map);
+    let coverageRibbonGroup = L.layerGroup().addTo(map);
 
     let watchId = null;
     let isGuiding = false;
@@ -186,7 +217,14 @@
     const tolInput = document.getElementById('tolerance');
     const tolVal = document.getElementById('tol-val');
 
-    tolInput.addEventListener('input', (e) => tolVal.innerText = e.target.value);
+    tolInput.addEventListener('input', (e) => {
+      tolVal.innerText = e.target.value;
+      saveState();
+    });
+
+    document.getElementById('swath-width').addEventListener('change', saveState);
+    document.getElementById('sound-mode').addEventListener('change', saveState);
+    document.getElementById('edge-guard-mode').addEventListener('change', saveState);
 
     // Map Click Handler
     map.on('click', function(e) {
@@ -204,14 +242,15 @@
         pointA = coords;
         if (markerA) map.removeLayer(markerA);
         markerA = L.marker(latlng, { draggable: true, title: 'Point A' }).addTo(map);
-        markerA.on('drag', (e) => { pointA = [e.latlng.lng, e.latlng.lat]; updateSwathLine(); });
+        markerA.on('drag', (e) => { pointA = [e.latlng.lng, e.latlng.lat]; updateSwathLine(); saveState(); });
       } else if (type === 'B') {
         pointB = coords;
         if (markerB) map.removeLayer(markerB);
         markerB = L.marker(latlng, { draggable: true, title: 'Point B' }).addTo(map);
-        markerB.on('drag', (e) => { pointB = [e.latlng.lng, e.latlng.lat]; updateSwathLine(); });
+        markerB.on('drag', (e) => { pointB = [e.latlng.lng, e.latlng.lat]; updateSwathLine(); saveState(); });
       }
       updateSwathLine();
+      saveState();
     }
 
     function setPoint(type) {
@@ -229,7 +268,7 @@
       }
     }
 
-    // Optional Feature: Generate Parallel Swath Lines Across Paddock
+    // Swath Line Generation
     function generateSwaths() {
       if (!pointA || !pointB) return alert("Set Point A and B first!");
       swathGroup.clearLayers();
@@ -239,12 +278,11 @@
       parallelPasses.push(baseLine);
 
       const width = parseFloat(document.getElementById('swath-width').value);
-      const numPasses = 10; // Generates 10 parallel passes left & right
+      const numPasses = 10;
 
       for (let i = 1; i <= numPasses; i++) {
         const leftLine = turf.lineOffset(baseLine, i * width, { units: 'meters' });
         const rightLine = turf.lineOffset(baseLine, -i * width, { units: 'meters' });
-
         parallelPasses.push(leftLine, rightLine);
 
         L.geoJSON(leftLine, { style: { color: '#00e5ff', weight: 2, dashArray: '4,6', opacity: 0.6 } }).addTo(swathGroup);
@@ -255,7 +293,71 @@
       hudSub.innerText = `Created ${numPasses * 2 + 1} parallel passes at ${width}m width`;
     }
 
-    // Polygon Geofencing Logic
+    // Track Recording & Coverage Buffer Engine
+    function toggleTrackRecording() {
+      const btn = document.getElementById('btn-rec');
+      if (!isRecordingTrack) {
+        isRecordingTrack = true;
+        btn.innerText = "REC Track: ON";
+        btn.className = "btn-danger";
+      } else {
+        isRecordingTrack = false;
+        btn.innerText = "REC Track: OFF";
+        btn.className = "btn-purple";
+      }
+    }
+
+    function recordGpsPoint(coords) {
+      if (!isRecordingTrack) return;
+
+      // Avoid adding points if user is standing still (less than 1.5m movement)
+      if (currentTrack.length > 0) {
+        const lastPt = turf.point(currentTrack[currentTrack.length - 1]);
+        const newPt = turf.point(coords);
+        if (turf.distance(lastPt, newPt, { units: 'meters' }) < 1.5) return;
+      }
+
+      currentTrack.push(coords);
+      
+      // Update green polyline on map
+      const latLngs = currentTrack.map(p => [p[1], p[0]]);
+      trackLineLayer.setLatLngs(latLngs);
+
+      // Render visual semi-transparent coverage ribbon (Swath Buffer)
+      renderCoverageRibbon();
+      saveState();
+    }
+
+    function renderCoverageRibbon() {
+      coverageRibbonGroup.clearLayers();
+      const swathWidth = parseFloat(document.getElementById('swath-width').value);
+
+      const allTracksToDraw = [...recordedTracks];
+      if (currentTrack.length >= 2) allTracksToDraw.push(currentTrack);
+
+      allTracksToDraw.forEach(trackCoords => {
+        if (trackCoords.length >= 2) {
+          const line = turf.lineString(trackCoords);
+          const buffered = turf.buffer(line, swathWidth / 2, { units: 'meters' });
+          L.geoJSON(buffered, {
+            style: { color: '#28a745', fillColor: '#28a745', fillOpacity: 0.3, weight: 1 }
+          }).addTo(coverageRibbonGroup);
+        }
+      });
+    }
+
+    function clearCurrentTrack() {
+      if (currentTrack.length >= 2) {
+        recordedTracks.push([...currentTrack]);
+      }
+      currentTrack = [];
+      trackLineLayer.setLatLngs([]);
+      renderCoverageRibbon();
+      saveState();
+      alert("Current track saved to history.");
+    }
+
+    // Polygon Geofence Engine
     function togglePolyMode() {
       const btn = document.getElementById('btn-poly');
       if (!isDrawingPoly) {
@@ -282,6 +384,7 @@
         if (fieldPolygon) map.removeLayer(fieldPolygon);
         fieldPolygon = L.polygon(latLngs, { color: '#ff9800', fillColor: '#ff9800', fillOpacity: 0.2 }).addTo(map);
       }
+      saveState();
     }
 
     function closePolygon() {
@@ -289,20 +392,51 @@
         hudStatus.innerText = "FIELD BOUNDARY SET";
         hudSub.innerText = "Geofence active. Start guidance when ready.";
       } else alert("Field boundary requires at least 3 points.");
+      saveState();
     }
 
-    function clearAll() {
-      pointA = null; pointB = null; polyPoints = []; parallelPasses = [];
-      if (markerA) map.removeLayer(markerA);
-      if (markerB) map.removeLayer(markerB);
-      if (swathLine) map.removeLayer(swathLine);
-      if (fieldPolygon) map.removeLayer(fieldPolygon);
-      swathGroup.clearLayers();
-      polyMarkers.forEach(m => map.removeLayer(m));
-      polyMarkers = [];
-      hudStatus.innerText = "STANDBY";
-      hudSub.innerText = "Map cleared.";
-      hud.className = "";
+    // State Persistence (localStorage)
+    function saveState() {
+      const state = {
+        pointA, pointB, polyPoints, recordedTracks, currentTrack,
+        tolerance: tolInput.value,
+        swathWidth: document.getElementById('swath-width').value,
+        soundMode: document.getElementById('sound-mode').value,
+        edgeGuardMode: document.getElementById('edge-guard-mode').value
+      };
+      localStorage.setItem('field_guide_state', JSON.stringify(state));
+    }
+
+    function loadState() {
+      const saved = localStorage.getItem('field_guide_state');
+      if (!saved) return;
+      try {
+        const state = JSON.parse(saved);
+        if (state.tolerance) { tolInput.value = state.tolerance; tolVal.innerText = state.tolerance; }
+        if (state.swathWidth) document.getElementById('swath-width').value = state.swathWidth;
+        if (state.soundMode) document.getElementById('sound-mode').value = state.soundMode;
+        if (state.edgeGuardMode) document.getElementById('edge-guard-mode').value = state.edgeGuardMode;
+        
+        if (state.pointA) setPointAtLatLng('A', L.latLng(state.pointA[1], state.pointA[0]));
+        if (state.pointB) setPointAtLatLng('B', L.latLng(state.pointB[1], state.pointB[0]));
+
+        if (state.polyPoints && state.polyPoints.length > 0) {
+          polyPoints = state.polyPoints;
+          const latLngs = polyPoints.map(p => [p[1], p[0]]);
+          fieldPolygon = L.polygon(latLngs, { color: '#ff9800', fillColor: '#ff9800', fillOpacity: 0.2 }).addTo(map);
+        }
+
+        if (state.recordedTracks) recordedTracks = state.recordedTracks;
+        if (state.currentTrack) currentTrack = state.currentTrack;
+        renderCoverageRibbon();
+      } catch (e) { console.log('Error loading saved state:', e); }
+    }
+
+    function clearAllData() {
+      if (confirm("Clear all points, field boundaries, and recorded tracks?")) {
+        localStorage.removeItem('field_guide_state');
+        location.reload();
+      }
     }
 
     // GPS Tracking Loop
@@ -320,6 +454,9 @@
               userMarker.setLatLng([latitude, longitude]);
             }
 
+            // Record track point
+            recordGpsPoint(currentGpsPos);
+
             if (isGuiding) processNavigation(currentGpsPos);
           },
           (error) => console.log('GPS error:', error),
@@ -331,6 +468,8 @@
     // Navigation & Math Engine
     function processNavigation(userCoords) {
       const pt = turf.point(userCoords);
+      const swathWidth = parseFloat(document.getElementById('swath-width').value);
+      const edgeGuard = document.getElementById('edge-guard-mode').value;
 
       // 1. Check Field Polygon Geofence
       if (polyPoints.length >= 3) {
@@ -345,10 +484,33 @@
         }
       }
 
-      // 2. Determine Nearest Swath / Guidance Line
+      // 2. Track Overlap Guard (Detect if stepping into previously sprayed/searched ribbon)
+      if (edgeGuard === 'overlap') {
+        const allTracksToTest = [...recordedTracks];
+        if (currentTrack.length > 5) {
+          // Test current track excluding the most recent 4 points
+          allTracksToTest.push(currentTrack.slice(0, -4));
+        }
+
+        for (let track of allTracksToTest) {
+          if (track.length >= 2) {
+            const trackLine = turf.lineString(track);
+            const distToTrack = turf.pointToLineDistance(pt, trackLine, { units: 'meters' });
+
+            if (distToTrack < (swathWidth * 0.85)) {
+              hud.className = "overlap";
+              hudStatus.innerText = `OVERLAP! (${distToTrack.toFixed(1)}m)`;
+              hudSub.innerText = "Entering previously searched/sprayed area!";
+              triggerFeedback(distToTrack, 'OVERLAP');
+              return;
+            }
+          }
+        }
+      }
+
+      // 3. Determine Nearest Swath / Guidance Line
       let activeLine = null;
       if (parallelPasses.length > 0) {
-        // Find closest parallel pass
         let minD = Infinity;
         parallelPasses.forEach(pass => {
           const d = turf.pointToLineDistance(pt, pass, { units: 'meters' });
@@ -361,7 +523,6 @@
       if (activeLine) {
         const distanceMeters = turf.pointToLineDistance(pt, activeLine, { units: 'meters' });
         
-        // Calculate Left vs Right drift relative to nearest line segment
         const coords = activeLine.geometry.coordinates;
         const u = [coords[1][0] - coords[0][0], coords[1][1] - coords[0][1]];
         const v = [userCoords[0] - coords[0][0], userCoords[1] - coords[0][1]];
@@ -381,7 +542,7 @@
       }
     }
 
-    // Multi-Mode Audio & Haptic Feedback Engine
+    // Audio & Haptic Feedback Engine
     function triggerFeedback(drift, side) {
       const now = Date.now();
       const interval = Math.max(180, 900 - (drift * 120)); 
@@ -389,42 +550,24 @@
       if (now - lastAudioTime > interval) {
         lastAudioTime = now;
 
-        // Trigger Haptic Vibration if enabled
-        const hapticMode = document.getElementById('haptic-mode').value;
-        if (hapticMode === 'on' && 'vibrate' in navigator) {
-          if (side === 'OUT') navigator.vibrate([200, 100, 200]);
-          else if (side === 'LEFT') navigator.vibrate([100]);
-          else if (side === 'RIGHT') navigator.vibrate([60, 40, 60]);
-        }
-
-        // Play Selected Audio Mode
         const soundMode = document.getElementById('sound-mode').value;
         if (soundMode === 'mute') return;
 
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') audioCtx.resume();
 
-        if (side === 'OUT') {
-          playPulse(300, 'sawtooth', 0.25);
+        if (side === 'OUT' || side === 'OVERLAP') {
+          playPulse( side === 'OUT' ? 300 : 420, 'sawtooth', 0.25);
           return;
         }
 
         if (soundMode === 'pitch') {
-          // Mode 1: Low Pitch for Left (380Hz), High Pitch for Right (850Hz)
-          const pitch = side === 'LEFT' ? 380 : 850;
-          playPulse(pitch, 'sine', 0.12);
-        } 
-        else if (soundMode === 'pulse') {
-          // Mode 2: 1 Ping for Left, Rapid 2 Pings for Right
+          playPulse(side === 'LEFT' ? 380 : 850, 'sine', 0.12);
+        } else if (soundMode === 'pulse') {
           playPulse(600, 'sine', 0.08);
-          if (side === 'RIGHT') {
-            setTimeout(() => playPulse(600, 'sine', 0.08), 100);
-          }
-        } 
-        else if (soundMode === 'wave') {
-          // Mode 3: Smooth Sine for Left, Sharp Square for Right
-          const waveType = side === 'LEFT' ? 'sine' : 'square';
-          playPulse(550, waveType, 0.14);
+          if (side === 'RIGHT') setTimeout(() => playPulse(600, 'sine', 0.08), 100);
+        } else if (soundMode === 'wave') {
+          playPulse(550, side === 'LEFT' ? 'sine' : 'square', 0.14);
         }
       }
     }
@@ -459,6 +602,8 @@
       }
     }
 
+    // Load persisted state & start GPS
+    loadState();
     startGpsTracking();
   </script>
 </body>
