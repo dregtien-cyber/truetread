@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Field Track & Weed Guidance</title>
   
-  <!-- Leaflet CSS -->
+  <!-- Leaflet CSS & DistortableImage CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-distortableimage@0.21.7/dist/leaflet.distortableimage.css" />
 
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -60,10 +61,11 @@
     }
 
     .btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
+    .btn-group-tight { display: flex; gap: 4px; width: 100%; }
     button {
       flex: 1;
-      min-width: 45%;
-      padding: 9px;
+      min-width: 30%;
+      padding: 9px 6px;
       border: none;
       border-radius: 8px;
       background: #007bff;
@@ -71,6 +73,7 @@
       font-weight: bold;
       font-size: 0.8rem;
       cursor: pointer;
+      text-align: center;
     }
     button:active { opacity: 0.8; }
     button.btn-danger { background: #dc3545; }
@@ -82,8 +85,27 @@
 
     .setting-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; font-weight: bold; color: #333; gap: 8px; }
     input[type="range"] { flex: 1; }
-    input[type="number"] { width: 55px; padding: 4px; border-radius: 4px; border: 1px solid #ccc; text-align: center; }
     select { padding: 5px; border-radius: 6px; border: 1px solid #ccc; font-size: 0.8rem; flex: 1; }
+
+    /* Export Dialog Modal */
+    #export-modal {
+      display: none;
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 85%; max-width: 340px;
+      background: #fff;
+      padding: 16px;
+      border-radius: 14px;
+      z-index: 2000;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      text-align: center;
+    }
+    #export-modal h3 { margin-bottom: 12px; font-size: 1.1rem; }
+    #export-modal .modal-btns { display: flex; flex-direction: column; gap: 8px; }
+
+    /* Hidden file inputs */
+    #image-file-input { display: none; }
   </style>
 </head>
 <body>
@@ -97,6 +119,9 @@
   <!-- Map Container -->
   <div id="map"></div>
 
+  <!-- Hidden File Input for Image Overlays -->
+  <input type="file" id="image-file-input" accept="image/*" onchange="handleImageUpload(event)" />
+
   <!-- Floating Controls -->
   <div id="controls">
     <!-- Settings Rows -->
@@ -105,9 +130,9 @@
       <input type="range" id="tolerance" min="0.5" max="10" step="0.5" value="1.5" />
     </div>
 
-    <div class="setting-row">
-      <span>Swath Width:</span>
-      <input type="number" id="swath-width" value="10" min="1" max="100" />m
+    <div class="setting-row" id="opacity-row" style="display:none;">
+      <span>Map Overlay Opacity:</span>
+      <input type="range" id="overlay-opacity" min="0.1" max="1" step="0.05" value="0.6" oninput="updateOverlayOpacity(this.value)" />
     </div>
 
     <div class="setting-row">
@@ -134,17 +159,18 @@
       <button class="btn-teal" onclick="addMarkPoint()">+ Mark Feature</button>
     </div>
 
-    <!-- Point A & B Baseline Controls -->
-    <div class="btn-group">
-      <button id="btn-toggle-ab" class="btn-secondary" onclick="toggleAbGuidance()">A-B Line: OFF</button>
-      <button id="btn-a" onclick="setPoint('A')">Set A</button>
-      <button id="btn-b" onclick="setPoint('B')">Set B</button>
+    <!-- Streamlined Single-Line A/B Baseline Controls -->
+    <div class="btn-group-tight">
+      <button id="btn-toggle-ab" class="btn-secondary" style="flex: 1.4;" onclick="toggleAbGuidance()">A-B Line: OFF</button>
+      <button id="btn-a" style="flex: 1;" onclick="setPoint('A')">Set A</button>
+      <button id="btn-b" style="flex: 1;" onclick="setPoint('B')">Set B</button>
     </div>
 
-    <!-- Field & Export Controls -->
+    <!-- Field, Image Overlay & Export Controls -->
     <div class="btn-group">
       <button id="btn-poly" class="btn-warning" onclick="togglePolyMode()">Draw Boundary</button>
-      <button class="btn-teal" onclick="exportGeoJSON()">Export GeoJSON</button>
+      <button class="btn-teal" onclick="triggerImageSelect()">+ Overlay Image</button>
+      <button class="btn-teal" onclick="openExportModal()">Export</button>
     </div>
 
     <div class="btn-group">
@@ -155,11 +181,24 @@
     <button id="btn-toggle" class="btn-success" onclick="toggleGuidance()">Start Guidance & Audio</button>
   </div>
 
-  <!-- CDNs: Leaflet, Turf, PouchDB -->
+  <!-- Export Options Modal -->
+  <div id="export-modal">
+    <h3>Export Track Data</h3>
+    <div class="modal-btns">
+      <button class="btn-teal" onclick="exportData('geojson')">Export GeoJSON</button>
+      <button class="btn-teal" onclick="exportData('gpx')">Export GPX (Garmin/GPS)</button>
+      <button class="btn-teal" onclick="exportData('shp')">Export Shapefile (.ZIP)</button>
+      <button class="btn-secondary" onclick="closeExportModal()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- CDNs: Leaflet, DistortableImage, Turf, PouchDB, shp-write -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-distortableimage@0.21.7/dist/leaflet.distortableimage.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/pouchdb@7.3.1/dist/pouchdb.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet-tilelayer-pouchdbcached@0.2.5/L.TileLayer.PouchDBCached.js"></script>
+  <script src="https://unpkg.com/@mapbox/shp-write@latest/shpwrite.js"></script>
 
   <script>
     const LINZ_API_KEY = 'c01kzjrd1dr2ffbk1e641138427';
@@ -204,11 +243,14 @@
     let fieldPolygon = null;
     let isDrawingPoly = false;
 
+    // Image Overlay Georeferencer State
+    let activeImageOverlay = null;
+
     // Track Recording & Marks
     let isRecordingTrack = false;
-    let currentTrack = []; // Array of [lon, lat]
-    let recordedTracks = []; // Array of arrays
-    let markedPoints = []; // Array of { coords: [lon, lat], note: string, timestamp: string }
+    let currentTrack = []; 
+    let recordedTracks = []; 
+    let markedPoints = []; 
     let markLayerGroup = L.layerGroup().addTo(map);
 
     let trackLineLayer = L.polyline([], { color: '#00ff66', weight: 3 }).addTo(map);
@@ -228,10 +270,10 @@
 
     tolInput.addEventListener('input', (e) => {
       tolVal.innerText = e.target.value;
+      renderCoverageRibbon();
       saveState();
     });
 
-    document.getElementById('swath-width').addEventListener('change', () => { renderCoverageRibbon(); saveState(); });
     document.getElementById('sound-mode').addEventListener('change', saveState);
     document.getElementById('edge-guard-mode').addEventListener('change', saveState);
 
@@ -244,6 +286,43 @@
         else if (!pointB) setPointAtLatLng('B', e.latlng);
       }
     });
+
+    // Image Overlay Handlers (Rotate / Move / Resize / Scale)
+    function triggerImageSelect() {
+      document.getElementById('image-file-input').click();
+    }
+
+    function handleImageUpload(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(event) {
+        const imgUrl = event.target.result;
+        
+        if (activeImageOverlay) {
+          map.removeLayer(activeImageOverlay);
+        }
+
+        // Initialize Distortable Image with corner handles
+        activeImageOverlay = L.distortableImageOverlay(imgUrl, {
+          selected: true,
+          mode: 'rotate',
+          opacity: 0.6
+        }).addTo(map);
+
+        document.getElementById('opacity-row').style.display = 'flex';
+        hudStatus.innerText = "MAP OVERLAY LOADED";
+        hudSub.innerText = "Drag corner handles to align photo with basemap";
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function updateOverlayOpacity(val) {
+      if (activeImageOverlay) {
+        activeImageOverlay.setOpacity(parseFloat(val));
+      }
+    }
 
     // A-B Baseline Logic
     function toggleAbGuidance() {
@@ -326,7 +405,7 @@
       marker.bindPopup(`<b>${mark.note}</b><br><small>${new Date(mark.timestamp).toLocaleString()}</small>`);
     }
 
-    // Track Recording & Coverage Buffer Engine
+    // Track Recording & Coverage Buffer Engine (Derives swath width dynamically as tolerance * 2)
     function toggleTrackRecording() {
       const btn = document.getElementById('btn-rec');
       if (!isRecordingTrack) {
@@ -360,7 +439,7 @@
 
     function renderCoverageRibbon() {
       coverageRibbonGroup.clearLayers();
-      const swathWidth = parseFloat(document.getElementById('swath-width').value);
+      const swathWidth = parseFloat(tolInput.value) * 2; // Derived swath width
 
       const allTracksToDraw = [...recordedTracks];
       if (currentTrack.length >= 2) allTracksToDraw.push(currentTrack);
@@ -425,40 +504,62 @@
       saveState();
     }
 
-    // GeoJSON Export Feature
-    function exportGeoJSON() {
+    // Export Modal & Multi-Format Generation (GeoJSON, GPX, SHP)
+    function openExportModal() { document.getElementById('export-modal').style.display = 'block'; }
+    function closeExportModal() { document.getElementById('export-modal').style.display = 'none'; }
+
+    function getFeatureCollection() {
       const features = [];
-
-      // Add Field Boundary
       if (polyPoints.length >= 3) {
-        const closedPoly = [...polyPoints, polyPoints[0]];
-        features.push(turf.polygon([closedPoly], { name: "Field Boundary" }));
+        features.push(turf.polygon([[...polyPoints, polyPoints[0]]], { name: "Field Boundary" }));
       }
-
-      // Add Recorded Tracks
       const allTracks = [...recordedTracks];
       if (currentTrack.length >= 2) allTracks.push(currentTrack);
-      allTracks.forEach((t, index) => {
-        if (t.length >= 2) {
-          features.push(turf.lineString(t, { name: `Track ${index + 1}` }));
-        }
+      allTracks.forEach((t, i) => {
+        if (t.length >= 2) features.push(turf.lineString(t, { name: `Track ${i + 1}` }));
       });
-
-      // Add Marked Points
       markedPoints.forEach(m => {
         features.push(turf.point(m.coords, { note: m.note, timestamp: m.timestamp }));
       });
+      return turf.featureCollection(features);
+    }
 
-      if (features.length === 0) return alert("No tracking data, marks, or boundaries to export.");
+    function exportData(format) {
+      const fc = getFeatureCollection();
+      if (fc.features.length === 0) {
+        alert("No tracking data, marks, or boundaries to export.");
+        return;
+      }
+      const dateStr = new Date().toISOString().slice(0,10);
 
-      const featureCollection = turf.featureCollection(features);
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(featureCollection, null, 2));
-      const downloadAnchor = document.createElement('a');
-      downloadAnchor.setAttribute("href", dataStr);
-      downloadAnchor.setAttribute("download", `field_track_export_${new Date().toISOString().slice(0,10)}.geojson`);
-      document.body.appendChild(downloadAnchor);
-      downloadAnchor.click();
-      downloadAnchor.remove();
+      if (format === 'geojson') {
+        downloadFile(`field_export_${dateStr}.geojson`, "application/json", JSON.stringify(fc, null, 2));
+      } else if (format === 'gpx') {
+        let gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="FieldTrackApp">\n`;
+        markedPoints.forEach(m => {
+          gpx += `  <wpt lat="${m.coords[1]}" lon="${m.coords[0]}"><name>${m.note}</name></wpt>\n`;
+        });
+        const allTracks = [...recordedTracks];
+        if (currentTrack.length >= 2) allTracks.push(currentTrack);
+        allTracks.forEach((t, i) => {
+          gpx += `  <trk><name>Track ${i+1}</name><trkseg>\n`;
+          t.forEach(pt => { gpx += `    <trkpt lat="${pt[1]}" lon="${pt[0]}"/>\n`; });
+          gpx += `  </trkseg></trk>\n`;
+        });
+        gpx += `</gpx>`;
+        downloadFile(`field_export_${dateStr}.gpx`, "application/gpx+xml", gpx);
+      } else if (format === 'shp') {
+        shpwrite.download(fc, { folder: `field_export_${dateStr}`, types: { point: 'marks', polygon: 'boundaries', line: 'tracks' } });
+      }
+      closeExportModal();
+    }
+
+    function downloadFile(filename, type, text) {
+      const blob = new Blob([text], { type: type });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      link.click();
     }
 
     // State Persistence
@@ -466,7 +567,6 @@
       const state = {
         pointA, pointB, isAbGuidanceActive, polyPoints, recordedTracks, currentTrack, markedPoints,
         tolerance: tolInput.value,
-        swathWidth: document.getElementById('swath-width').value,
         soundMode: document.getElementById('sound-mode').value,
         edgeGuardMode: document.getElementById('edge-guard-mode').value
       };
@@ -479,7 +579,6 @@
       try {
         const state = JSON.parse(saved);
         if (state.tolerance) { tolInput.value = state.tolerance; tolVal.innerText = state.tolerance; }
-        if (state.swathWidth) document.getElementById('swath-width').value = state.swathWidth;
         if (state.soundMode) document.getElementById('sound-mode').value = state.soundMode;
         if (state.edgeGuardMode) document.getElementById('edge-guard-mode').value = state.edgeGuardMode;
         
@@ -544,11 +643,11 @@
     // Navigation & Math Engine
     function processNavigation(userCoords) {
       const pt = turf.point(userCoords);
-      const swathWidth = parseFloat(document.getElementById('swath-width').value);
       const tolerance = parseFloat(tolInput.value);
+      const swathWidth = tolerance * 2;
       const edgeGuard = document.getElementById('edge-guard-mode').value;
 
-      // 1. Field Boundary Geofence + Boundary Tolerance
+      // 1. Field Boundary Geofence
       if (polyPoints.length >= 3) {
         const closedPolyCoords = [...polyPoints, polyPoints[0]];
         const polyFeature = turf.polygon([closedPolyCoords]);
@@ -565,7 +664,7 @@
         }
       }
 
-      // 2. Track Overlap Guard (Swath Width minus Tolerance)
+      // 2. Track Overlap Guard
       if (edgeGuard === 'overlap') {
         const allTracksToTest = [...recordedTracks];
         if (currentTrack.length > 5) {
@@ -611,7 +710,6 @@
           triggerFeedback(distanceMeters, side);
         }
       } else {
-        // Simple Coverage Display Mode
         hud.className = "on-track";
         hudStatus.innerText = "COVERAGE MODE";
         hudSub.innerText = "Recording track & searching area...";
