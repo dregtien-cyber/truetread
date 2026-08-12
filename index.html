@@ -5,9 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Field Track & Weed Guidance</title>
   
-  <!-- Leaflet CSS, Leaflet Toolbar CSS & DistortableImage CSS -->
+  <!-- Leaflet CSS & Toolbar CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-toolbar@0.4.0/dist/leaflet.toolbar.css" />
+  
+  <!-- FontAwesome (Required by DistortableImage for corner handles) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  
+  <!-- DistortableImage CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet-distortableimage@0.21.7/dist/leaflet.distortableimage.css" />
 
   <style>
@@ -15,6 +20,14 @@
     body, html { width: 100%; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
 
     #map { width: 100%; height: 100vh; z-index: 1; }
+
+    /* Touch & Handle Compatibility Fix for Chrome / Android */
+    .leaflet-overlay-pane img, 
+    .ldi-icon, 
+    .leaflet-marker-icon {
+      touch-action: none !important;
+      pointer-events: auto !important;
+    }
 
     /* Top HUD Lightbar */
     #hud {
@@ -299,7 +312,7 @@
       }
     });
 
-    // Image Overlay Handlers (Chrome handles fixed via toolbar & editing mode)
+    // Image Overlay Handlers (Async safe + touch event enabled)
     function triggerImageSelect() {
       document.getElementById('image-file-input').click();
     }
@@ -316,17 +329,24 @@
           map.removeLayer(activeImageOverlay);
         }
 
-        // Initialize Distortable Image with corner handles
+        // Initialize Overlay instance
         activeImageOverlay = L.distortableImageOverlay(imgUrl, {
           selected: true,
           mode: 'rotate',
           opacity: 0.6
-        }).addTo(map);
+        });
 
-        // Explicitly enable handles once added to map
-        if (activeImageOverlay.editing) {
-          activeImageOverlay.editing.enable();
-        }
+        // Async Guard: Wait until the browser decodes image dimensions before building handles
+        activeImageOverlay.on('load', function() {
+          if (activeImageOverlay.editing) {
+            activeImageOverlay.editing.enable();
+            if (activeImageOverlay.editing._corners) {
+              activeImageOverlay.editing._enableHandles();
+            }
+          }
+        });
+
+        activeImageOverlay.addTo(map);
 
         document.getElementById('opacity-row').style.display = 'flex';
         hudStatus.innerText = "MAP OVERLAY LOADED";
