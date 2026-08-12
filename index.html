@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Field Track & Weed Guidance</title>
   
-  <!-- Leaflet CSS & DistortableImage CSS -->
+  <!-- Leaflet CSS, Leaflet Toolbar CSS & DistortableImage CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-toolbar@0.4.0/dist/leaflet.toolbar.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-distortableimage@0.21.7/dist/leaflet.distortableimage.css" />
 
   <style>
@@ -22,7 +23,7 @@
       left: 50%;
       transform: translateX(-50%);
       width: 90%;
-      max-width: 450px;
+      max-width: 480px;
       padding: 10px 14px;
       background: rgba(20, 20, 20, 0.92);
       color: #fff;
@@ -46,8 +47,8 @@
       bottom: 12px;
       left: 50%;
       transform: translateX(-50%);
-      width: 92%;
-      max-width: 450px;
+      width: 94%;
+      max-width: 500px;
       background: rgba(255, 255, 255, 0.96);
       padding: 12px;
       border-radius: 14px;
@@ -56,22 +57,23 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
-      max-height: 55vh;
+      max-height: 60vh;
       overflow-y: auto;
     }
 
     .btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
-    .btn-group-tight { display: flex; gap: 4px; width: 100%; }
+    .btn-row-single { display: flex; gap: 4px; width: 100%; overflow-x: auto; white-space: nowrap; }
+    
     button {
       flex: 1;
-      min-width: 30%;
-      padding: 9px 6px;
+      min-width: 18%;
+      padding: 9px 4px;
       border: none;
       border-radius: 8px;
       background: #007bff;
       color: white;
       font-weight: bold;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       cursor: pointer;
       text-align: center;
     }
@@ -104,7 +106,6 @@
     #export-modal h3 { margin-bottom: 12px; font-size: 1.1rem; }
     #export-modal .modal-btns { display: flex; flex-direction: column; gap: 8px; }
 
-    /* Hidden file inputs */
     #image-file-input { display: none; }
   </style>
 </head>
@@ -130,6 +131,18 @@
       <input type="range" id="tolerance" min="0.5" max="10" step="0.5" value="1.5" />
     </div>
 
+    <div class="setting-row">
+      <span>Track Color:</span>
+      <select id="track-color" onchange="updateTrackColor(this.value)">
+        <option value="#00ff66">Neon Green</option>
+        <option value="#ffeb3b">High-Vis Yellow</option>
+        <option value="#00e5ff">Cyan Blue</option>
+        <option value="#ff00ff">Hot Pink</option>
+        <option value="#ff9800">Safety Orange</option>
+        <option value="#ff1744">Red</option>
+      </select>
+    </div>
+
     <div class="setting-row" id="opacity-row" style="display:none;">
       <span>Map Overlay Opacity:</span>
       <input type="range" id="overlay-opacity" min="0.1" max="1" step="0.05" value="0.6" oninput="updateOverlayOpacity(this.value)" />
@@ -153,28 +166,25 @@
       </select>
     </div>
 
-    <!-- Track Recording & Mark Buttons -->
-    <div class="btn-group">
-      <button id="btn-rec" class="btn-purple" onclick="toggleTrackRecording()">REC Track: OFF</button>
-      <button class="btn-teal" onclick="addMarkPoint()">+ Mark Feature</button>
+    <!-- Single Consolidated Row for All Track & Feature Controls -->
+    <div class="btn-row-single">
+      <button id="btn-rec" class="btn-purple" onclick="toggleTrackRecording()">REC: OFF</button>
+      <button class="btn-teal" onclick="addMarkPoint()">+ Mark</button>
+      <button id="btn-poly" class="btn-warning" onclick="togglePolyMode()">Draw Field</button>
+      <button class="btn-teal" onclick="triggerImageSelect()">+ Overlay</button>
+      <button class="btn-secondary" onclick="clearCurrentTrack()">Save Track</button>
     </div>
 
-    <!-- Streamlined Single-Line A/B Baseline Controls -->
-    <div class="btn-group-tight">
+    <!-- Single-Line A/B Baseline Controls -->
+    <div class="btn-row-single">
       <button id="btn-toggle-ab" class="btn-secondary" style="flex: 1.4;" onclick="toggleAbGuidance()">A-B Line: OFF</button>
       <button id="btn-a" style="flex: 1;" onclick="setPoint('A')">Set A</button>
       <button id="btn-b" style="flex: 1;" onclick="setPoint('B')">Set B</button>
     </div>
 
-    <!-- Field, Image Overlay & Export Controls -->
+    <!-- Export, Reset & Guidance Controls -->
     <div class="btn-group">
-      <button id="btn-poly" class="btn-warning" onclick="togglePolyMode()">Draw Boundary</button>
-      <button class="btn-teal" onclick="triggerImageSelect()">+ Overlay Image</button>
       <button class="btn-teal" onclick="openExportModal()">Export</button>
-    </div>
-
-    <div class="btn-group">
-      <button class="btn-secondary" onclick="clearCurrentTrack()">Save Track</button>
       <button class="btn-danger" onclick="clearAllData()">Reset All</button>
     </div>
 
@@ -192,8 +202,9 @@
     </div>
   </div>
 
-  <!-- CDNs: Leaflet, DistortableImage, Turf, PouchDB, shp-write -->
+  <!-- CDNs: Leaflet, Leaflet-Toolbar, DistortableImage, Turf, PouchDB, shp-write -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-toolbar@0.4.0/dist/leaflet.toolbar.js"></script>
   <script src="https://unpkg.com/leaflet-distortableimage@0.21.7/dist/leaflet.distortableimage.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/pouchdb@7.3.1/dist/pouchdb.min.js"></script>
@@ -246,14 +257,15 @@
     // Image Overlay Georeferencer State
     let activeImageOverlay = null;
 
-    // Track Recording & Marks
+    // Track Color & Layer Setup
+    let activeTrackColor = '#00ff66';
     let isRecordingTrack = false;
     let currentTrack = []; 
     let recordedTracks = []; 
     let markedPoints = []; 
     let markLayerGroup = L.layerGroup().addTo(map);
 
-    let trackLineLayer = L.polyline([], { color: '#00ff66', weight: 3 }).addTo(map);
+    let trackLineLayer = L.polyline([], { color: activeTrackColor, weight: 4 }).addTo(map);
     let coverageRibbonGroup = L.layerGroup().addTo(map);
 
     let watchId = null;
@@ -287,7 +299,7 @@
       }
     });
 
-    // Image Overlay Handlers (Rotate / Move / Resize / Scale)
+    // Image Overlay Handlers (Chrome handles fixed via toolbar & editing mode)
     function triggerImageSelect() {
       document.getElementById('image-file-input').click();
     }
@@ -311,6 +323,11 @@
           opacity: 0.6
         }).addTo(map);
 
+        // Explicitly enable handles once added to map
+        if (activeImageOverlay.editing) {
+          activeImageOverlay.editing.enable();
+        }
+
         document.getElementById('opacity-row').style.display = 'flex';
         hudStatus.innerText = "MAP OVERLAY LOADED";
         hudSub.innerText = "Drag corner handles to align photo with basemap";
@@ -322,6 +339,14 @@
       if (activeImageOverlay) {
         activeImageOverlay.setOpacity(parseFloat(val));
       }
+    }
+
+    // Dynamic Track Color Changing
+    function updateTrackColor(hexColor) {
+      activeTrackColor = hexColor;
+      trackLineLayer.setStyle({ color: activeTrackColor });
+      renderCoverageRibbon();
+      saveState();
     }
 
     // A-B Baseline Logic
@@ -405,16 +430,16 @@
       marker.bindPopup(`<b>${mark.note}</b><br><small>${new Date(mark.timestamp).toLocaleString()}</small>`);
     }
 
-    // Track Recording & Coverage Buffer Engine (Derives swath width dynamically as tolerance * 2)
+    // Track Recording & Dynamic Coverage Buffer Engine
     function toggleTrackRecording() {
       const btn = document.getElementById('btn-rec');
       if (!isRecordingTrack) {
         isRecordingTrack = true;
-        btn.innerText = "REC Track: ON";
+        btn.innerText = "REC: ON";
         btn.className = "btn-danger";
       } else {
         isRecordingTrack = false;
-        btn.innerText = "REC Track: OFF";
+        btn.innerText = "REC: OFF";
         btn.className = "btn-purple";
       }
     }
@@ -439,7 +464,7 @@
 
     function renderCoverageRibbon() {
       coverageRibbonGroup.clearLayers();
-      const swathWidth = parseFloat(tolInput.value) * 2; // Derived swath width
+      const swathWidth = parseFloat(tolInput.value) * 2;
 
       const allTracksToDraw = [...recordedTracks];
       if (currentTrack.length >= 2) allTracksToDraw.push(currentTrack);
@@ -449,7 +474,7 @@
           const line = turf.lineString(trackCoords);
           const buffered = turf.buffer(line, swathWidth / 2, { units: 'meters' });
           L.geoJSON(buffered, {
-            style: { color: '#28a745', fillColor: '#28a745', fillOpacity: 0.35, weight: 1 }
+            style: { color: activeTrackColor, fillColor: activeTrackColor, fillOpacity: 0.35, weight: 1 }
           }).addTo(coverageRibbonGroup);
         }
       });
@@ -477,7 +502,7 @@
         hudSub.innerText = "Tap map edges to draw boundary perimeter";
       } else {
         isDrawingPoly = false;
-        btn.innerText = "Draw Boundary";
+        btn.innerText = "Draw Field";
         btn.className = "btn-warning";
         closePolygon();
       }
@@ -504,7 +529,7 @@
       saveState();
     }
 
-    // Export Modal & Multi-Format Generation (GeoJSON, GPX, SHP)
+    // Export Modal & Multi-Format Generation
     function openExportModal() { document.getElementById('export-modal').style.display = 'block'; }
     function closeExportModal() { document.getElementById('export-modal').style.display = 'none'; }
 
@@ -567,6 +592,7 @@
       const state = {
         pointA, pointB, isAbGuidanceActive, polyPoints, recordedTracks, currentTrack, markedPoints,
         tolerance: tolInput.value,
+        trackColor: activeTrackColor,
         soundMode: document.getElementById('sound-mode').value,
         edgeGuardMode: document.getElementById('edge-guard-mode').value
       };
@@ -579,6 +605,11 @@
       try {
         const state = JSON.parse(saved);
         if (state.tolerance) { tolInput.value = state.tolerance; tolVal.innerText = state.tolerance; }
+        if (state.trackColor) {
+          activeTrackColor = state.trackColor;
+          document.getElementById('track-color').value = state.trackColor;
+          trackLineLayer.setStyle({ color: activeTrackColor });
+        }
         if (state.soundMode) document.getElementById('sound-mode').value = state.soundMode;
         if (state.edgeGuardMode) document.getElementById('edge-guard-mode').value = state.edgeGuardMode;
         
